@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Results</title>
+</head>
+<body>
+    <h1>Search Results for "{{ query }}"</h1>
+    <ul>
+        {% for result in results %}
+            <li>
+                <strong>URL:</strong> <a href="{{ result._source.url }}" target="_blank">{{ result._source.url }}</a><br>
+                <strong>Title:</strong> {{ result._source.title }}<br>
+                <strong>Anchor Texts:</strong> {{ result._source.anchor_texts|join(", ") }}<br>
+                <strong>PageRank:</strong> {{ result._source.pagerank }}<br><br>
+            </li>
+        {% endfor %}
+    </ul>
+    <a href="{{ url_for('search_page') }}">Back to Search</a>
+</body>
+</html>
