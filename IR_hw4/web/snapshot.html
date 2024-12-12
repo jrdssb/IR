@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Save Snapshot</title>
+</head>
+<body>
+    <h1>Save a Web Snapshot</h1>
+    <form method="POST">
+        <label for="url">Enter URL to snapshot:</label>
+        <input type="text" id="url" name="url" required><br><br>
+
+        <label for="snapshot_type">Snapshot Type:</label>
+        <select name="snapshot_type" required>
+            <option value="html">HTML Snapshot</option>
+            <option value="screenshot">Screenshot Snapshot</option>
+        </select><br><br>
+
+        <button type="submit">Save Snapshot</button>
+    </form>
+
+    {% if message %}
+        <p>{{ message }}</p>
+    {% endif %}
+</body>
+</html>

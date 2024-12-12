@@ -1,216 +1,188 @@
 import requests
-import networkx as nx
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-import tldextract  # 用于提取域名
-import chardet  # 用于自动检测网页编码
-import concurrent.futures
+from urllib.parse import urlparse, urljoin, urlunparse
+import chardet
+import time
+import os
+import re
 
 # 全局变量
-g = nx.DiGraph()
-urllist = {}
-visited = set()
-url_queue = []
-max_urls = 100000
-url_file = "urls.txt"
-
-
-# 全局变量
-batch_data = []
-batch_size = 10  # 每批次保存的 URL 数量
-
-
-def check_url_status(url):
-    """检查URL的状态码，判断是否为 404"""
-    try:
-        response = requests.get(url, timeout=5)  # 设置超时时间为5秒
-        if response.status_code == 200:
-            return True
-        else:
-            return False
-    except requests.RequestException as e:
-        return True
+url_queue = []  # 待爬取的URL队列
+visited = set()  # 已访问的URL集合
+nankai_urls = set()  # 符合条件的URL集合
+adj_list = {}  # 用于PageRank计算的邻接表
+max_urls = 100000 # 最大URL爬取数量限制
 
 
 def check_nankai(url):
-    """检查URL的域名是否包含'nankai'，如果不包含则跳过"""
+    """检查URL的域名是否包含'nankai'"""
     parsed_url = urlparse(url)
-    domain = parsed_url.netloc  # 获取完整的域名（包括子域名）
-
-    if "nankai" not in domain:
-        return False
-    return True
+    domain = parsed_url.netloc  # 获取域名
+    return "nankai" in domain
 
 
+# def extract_links(html, base_url):
+#     """从网页中提取所有链接"""
+#     soup = BeautifulSoup(html, 'html.parser')
+#     links = []
+#     for tag in soup.find_all('a', href=True):
+#         href = tag.get('href')  # 获取<a>标签的href属性
+#         if href.startswith('#') or "javascript:" in href or not href:
+#             continue
+#         href = urljoin(base_url, href)  # 将相对链接转换为绝对链接
+#         parsed_url = urlparse(href)
+#         if not parsed_url.scheme or not parsed_url.netloc:  # 检查url是否具备基本格式
+#             continue
+#         parsed_url = urlparse(href)
+#         cleaned_url = urlunparse(parsed_url._replace(query="", fragment=""))  # 去除查询与参数
+#         links.append(cleaned_url)
+#     return links
 def extract_links(html, base_url):
-    """提取网页中的所有链接"""
+    """从网页中提取所有链接"""
     soup = BeautifulSoup(html, 'html.parser')
     links = []
+    # 设置不保存的文件后缀
+    exclude_extensions = {'.pdf', '.doc', '.mp4', '.zip', '.rar', '.docx', '.xlsx', '.xls'}
+
     for tag in soup.find_all('a', href=True):
-        href = tag.get('href')
+        href = tag.get('href')  # 获取<a>标签的href属性
         if href.startswith('#') or "javascript:" in href or not href:
             continue
-        if not href.startswith('http'):
-            if href.startswith('/'):
-                href = base_url + href
-            else:
-                href = base_url + '/' + href
-        links.append(href)
+        href = urljoin(base_url, href)  # 将相对链接转换为绝对链接
+        parsed_url = urlparse(href)
+        if not parsed_url.scheme or not parsed_url.netloc:  # 检查url是否具备基本格式
+            continue
+        # 获取文件后缀并检查是否在排除列表中
+        _, ext = os.path.splitext(parsed_url.path)
+        if ext.lower() in exclude_extensions:
+            continue
+        # 清理URL，去除查询和片段
+        cleaned_url = urlunparse(parsed_url._replace(query="", fragment=""))
+        links.append(cleaned_url)
     return links
 
 
 
-def save_url_with_content(url, title, html):
-    """保存URL、title和HTML内容到文件"""
-    with open("urls_with_content.txt", 'a', encoding='utf-8') as f:
-        f.write(f"URL: {url}\nTitle: {title}\nHTML: {html}\n\n")
-
-
-def extract_anchor_texts(html):
-    """提取网页中的所有锚文本"""
-    soup = BeautifulSoup(html, 'html.parser')
-    anchor_texts = []
-    for tag in soup.find_all('a', href=True):
-        anchor_texts.append(tag.get_text(strip=True))
-    return anchor_texts
-
-
-def save_pagerank(pagerank):
-    """保存PageRank结果到文件"""
-    with open("pagerank_results.txt", 'w', encoding='utf-8') as f:
-        for node, rank in pagerank.items():
-            f.write(f"URL: {node}, PageRank: {rank}\n")
-    print("PageRank results saved to pagerank_results.txt.")
-
-
-def batch_save_data(batch_data):
-    """批量保存数据"""
-    with open("urls_with_content.txt", 'a', encoding='utf-8') as f:
-        for data in batch_data:
-            f.write(f"URL: {data['url']}\nTitle: {data['title']}\nAnchor Texts: {', '.join(data['anchor_texts'])}\n\n")
-    print(f"Saved {len(batch_data)} URLs.")
-
-
 def crawl_urls(start_url):
-    """同步爬取网页并构建图，同时提取锚文本和title"""
-    global urllist, visited, url_queue, batch_data
+    """爬取域名中包含'nankai'的URL"""
+    global url_queue, visited, nankai_urls, adj_list
 
-    while len(urllist) < max_urls and url_queue:
-        url = url_queue.pop(0)
+    # 初始化队列
+    url_queue.append(start_url)
 
-        if url in visited or url not in urllist or not check_nankai(url):
+    while url_queue and len(nankai_urls) < max_urls:
+        url = url_queue.pop(0)  # 从队列中取出一个URL
+
+        if url in visited:
+            continue
+        visited.add(url)
+
+        if not check_nankai(url):  # 检查URL是否符合条件
             continue
 
         try:
-            response = requests.get(url, timeout=5)
+            # 发送HTTP请求
+            response = requests.get(url, timeout=1)
             if response.status_code != 200:
                 continue
-            raw_html = response.content
-            detected_encoding = chardet.detect(raw_html)
-            encoding = detected_encoding.get('encoding', 'utf-8')
-            html = raw_html.decode(encoding, errors='ignore')
 
-            # 提取网页的title
-            soup = BeautifulSoup(html, 'html.parser')
-            title = soup.title.string if soup.title else 'No Title'
+            raw_html = response.content  # 获取网页内容
 
-            # 提取网页中的所有锚文本
-            anchor_texts = extract_anchor_texts(html)
+            # 尝试直接使用utf-8解码，如果解码失败，跳过当前URL
+            try:
+                html = raw_html.decode('utf-8')  # 直接使用utf-8解码
+            except UnicodeDecodeError:
+                print(f"Error decoding {url} with utf-8, skipping.")
+                continue  # 解码失败，跳过当前URL
+
+            # 提取链接并添加到队列
+            links = extract_links(html, url)
+            adj_list[url] = links  # 构建邻接表
+            for link in links:
+                if link not in visited and check_nankai(link):
+                    url_queue.append(link)
+
+            nankai_urls.add(url)  # 保存符合条件的URL
+            print(f"add url: {len(nankai_urls)} {url}")
+
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             continue
 
-        visited.add(url)
+    print(f"Total nankai URLs collected: {len(nankai_urls)}")
+    return nankai_urls
 
-        # 将数据存储到 batch_data 中
-        batch_data.append({
-            'url': url,
-            'title': title,
-            'anchor_texts': anchor_texts
-        })
 
-        # 当存储的数据量达到批次大小时，保存并清空 batch_data
-        if len(batch_data) >= batch_size:
-            batch_save_data(batch_data)
-            batch_data.clear()  # 清空列表，准备存储下一批数据
 
-        # 提取链接
-        links = extract_links(html, url)
-        if url not in g:
-            g.add_node(url)
+import numpy as np
 
+
+from scipy.sparse import csr_matrix
+
+
+def calculate_pagerank_sparse(adj_list, damping=0.85, max_iterations=20, tol=1.0e-6):
+    """使用稀疏矩阵优化PageRank计算"""
+    from scipy.sparse import csr_matrix
+    import numpy as np
+
+    nodes = list(adj_list.keys())  # 获取所有节点
+    num_nodes = len(nodes)
+    node_index = {node: i for i, node in enumerate(nodes)}  # 节点索引映射
+
+    # 构建稀疏矩阵
+    row, col, data = [], [], []
+    for node, links in adj_list.items():
+        node_idx = node_index[node]
         for link in links:
-            is_useful_link = check_url_status(link) and check_nankai(url)
-            if link not in visited and is_useful_link:
-                url_queue.append(link)
-                if link not in urllist:
-                    urllist[link] = 0
+            if link in node_index:  # 忽略未在邻接表中的链接
+                row.append(node_index[link])
+                col.append(node_idx)
+                data.append(1)
+    print(f"构造稀疏矩阵完成")
+    # 转换为稀疏矩阵
+    M = csr_matrix((data, (row, col)), shape=(num_nodes, num_nodes))
+    out_degree = np.array(M.sum(axis=0)).flatten()  # 出度数组
+    out_degree[out_degree == 0] = 1  # 防止除零
+    M = M.multiply(1 / out_degree)  # 转换为概率转移矩阵
 
-            # 添加边到图
-            if link not in g:
-                g.add_node(link)
-            g.add_edge(url, link)
+    # 初始化PageRank
+    rank = np.ones(num_nodes) / num_nodes
 
-    # 计算 PageRank
-    pagerank = nx.pagerank(g, alpha=0.85)
-    save_pagerank(pagerank)
+    # 迭代计算
+    print("开始PageRank计算...")
+    for iteration in range(1, max_iterations + 1):
+        new_rank = (1 - damping) / num_nodes + damping * M.dot(rank)
+        diff = np.linalg.norm(new_rank - rank, 1)
 
-    # 最后保存剩余的数据（即便它们是叶节点，确保保存）
-    if batch_data:
-        batch_save_data(batch_data)
+        # 输出当前迭代进度和L1范数变化
+        print(f"第 {iteration} 次迭代: L1 范数差异 = {diff:.6e}")
 
-    # **强制处理队列中剩余的 URL**，确保它们的标题和锚文本被保存
-    while url_queue:
-        url = url_queue.pop(0)
-        if url not in visited:
-            try:
-                response = requests.get(url, timeout=5)
-                if response.status_code != 200:
-                    continue
-                raw_html = response.content
-                detected_encoding = chardet.detect(raw_html)
-                encoding = detected_encoding.get('encoding', 'utf-8')
-                html = raw_html.decode(encoding, errors='ignore')
+        if diff < tol:
+            print(f"在第 {iteration} 次迭代后收敛。")
+            break
+        rank = new_rank
 
-                # 提取网页的title
-                soup = BeautifulSoup(html, 'html.parser')
-                title = soup.title.string if soup.title else 'No Title'
+    else:
+        print("达到最大迭代次数，但未完全收敛。")
 
-                # 提取网页中的所有锚文本
-                anchor_texts = extract_anchor_texts(html)
-            except Exception as e:
-                print(f"Error fetching {url}: {e}")
-                continue
-
-            visited.add(url)
-
-            # 将数据存储到 batch_data 中
-            batch_data.append({
-                'url': url,
-                'title': title,
-                'anchor_texts': anchor_texts
-            })
-
-            # 保存数据
-            if batch_data:
-                batch_save_data(batch_data)
-                batch_data.clear()  # 清空列表，准备存储下一批数据
-
-
-def start_crawl(start_url):
-    """启动爬虫"""
-    urllist[start_url] = 0
-    url_queue.append(start_url)
-    crawl_urls(start_url)
+    return {node: rank[node_index[node]] for node in nodes}
 
 
 def main():
-    start_url = "https://www.nankai.edu.cn"  # 起始URL，替换为实际URL
-    start_crawl(start_url)
+    start_time = time.time()
+    start_url = "https://www.nankai.edu.cn"  # 起始URL
+    nankai_urls = crawl_urls(start_url)
 
-    # 等待爬取完成，计算PageRank
-    print(f"Total URLs crawled: {len(visited)}")
-    print("Crawl Completed.")
+    # 计算PageRank分数
+    pagerank_scores = calculate_pagerank_sparse(adj_list)
+
+    # 保存到文件
+    with open("urls_with_pagerank.txt", "w", encoding="utf-8") as f:
+        for url, score in sorted(pagerank_scores.items(), key=lambda x: x[1], reverse=True):
+            f.write(f"{url}\t{score:.6f}\n")
+
+    print(f"URL采集和PageRank计算完成，共耗时 {time.time() - start_time:.2f} 秒。")
+    print("结果已保存到 'urls_with_pagerank.txt' 文件。")
 
 
 if __name__ == "__main__":

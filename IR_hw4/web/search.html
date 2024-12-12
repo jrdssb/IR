@@ -14,5 +14,17 @@
         <input type="text" name="query" placeholder="Enter search query" required>
         <button type="submit">Search</button>
     </form>
+
+    <h2>Recent Searches</h2>
+    <ul>
+        {% for search in recent_searches %}
+            <li>{{ search }}</li>
+        {% else %}
+            <li>No recent searches.</li>
+        {% endfor %}
+    </ul>
+
+    <h2>Take a Snapshot</h2>
+    <a href="{{ url_for('snapshot') }}">Save a Web Snapshot</a>
 </body>
 </html>
