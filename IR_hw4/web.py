@@ -2,10 +2,16 @@ from flask import Flask, render_template, request, redirect, url_for, session
 from flask_session import Session
 from elasticsearch import Elasticsearch
 import json
+import re
 import os
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
+
 from PIL import Image
 if not os.path.exists('html_snapshots'):
     os.makedirs('html_snapshots')
@@ -32,6 +38,15 @@ es = Elasticsearch([{'host': 'localhost', 'port': 9200, 'scheme': 'http'}])
 users_file = 'users.json'
 
 
+def compute_cosine_similarity(query, document):
+    """计算查询词与文档的余弦相似度"""
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform([query, document])
+    cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])
+    return cosine_sim[0][0]
+
+
+
 def load_users():
     """加载用户数据"""
     if os.path.exists(users_file):
@@ -46,12 +61,20 @@ def save_users(users):
         json.dump(users, f)
 
 
+def clean_url(url):
+    """去除 URL 中的数字前缀"""
+    # 使用正则表达式去除前缀数字和点
+    cleaned_url = re.sub(r'^\d+\.', '', url)
+    return cleaned_url
+
+
 # Elasticsearch 索引名称
-index_name = 'nankai'
+index_name = 'nankai_url'
 
 
-def search(query, use_wildcard=False):
-    """通过查询字符串查询 Elasticsearch 索引"""
+def search(query, username=None, use_wildcard=False):
+    """进行搜索并考虑历史记录和PageRank进行个性化排序"""
+    # Step 1: 原始查询，得到初步搜索结果
     if use_wildcard:
         query_body = {
             "query": {
@@ -80,7 +103,76 @@ def search(query, use_wildcard=False):
 
     # 执行查询
     response = es.search(index=index_name, body=query_body)
-    return response['hits']['hits']
+    hits = response['hits']['hits']
+
+    # Step 2: 获取用户历史记录
+    user_history = get_search_history(username) if username else []
+
+    # Step 3: 计算历史记录的余弦相似度
+    historical_similarities = []
+    for hit in hits:
+        title = hit['_source'].get('title', '').strip()
+        similarity = 0
+        for history_item in user_history:
+            similarity += compute_cosine_similarity(history_item.strip(), title)
+        historical_similarities.append(similarity)
+
+    # Step 4: 计算查询词与结果的余弦相似度
+    query_similarities = []
+    for hit in hits:
+        title = hit['_source'].get('title', '').strip()
+        query_similarities.append(compute_cosine_similarity(query, title))
+
+    # Step 5: 获取PageRank
+    pageranks = [hit['_source'].get('page_rank', 0) for hit in hits]
+
+    # Step 6: 归一化所有得分
+    def normalize(scores):
+        min_score = min(scores)
+        max_score = max(scores)
+        return [(score - min_score) / (max_score - min_score) if max_score != min_score else 0 for score in scores]
+
+    historical_similarities = normalize(historical_similarities)
+    query_similarities = normalize(query_similarities)
+    pageranks = normalize(pageranks)
+
+    # Step 7: 加权综合评分
+    weighted_scores = []
+    weight_history = 0.6
+    weight_query = 0.2
+    weight_pagerank = 0.2
+
+    for i in range(len(hits)):
+        score = (weight_history * historical_similarities[i] +
+                 weight_query * query_similarities[i] +
+                 weight_pagerank * pageranks[i])
+        weighted_scores.append(score)
+
+    # Step 8: 对每个结果的 URL 进行处理
+    for hit in hits:
+        url = hit['_source'].get('url', '').strip()
+        cleaned_url = clean_url(url)
+        hit['_source']['url'] = cleaned_url  # 更新 URL 为去除前缀后的版本
+
+    # 去重：根据标题去重
+    seen_titles = set()
+    unique_hits = []
+    for hit in hits:
+        title = hit['_source'].get('title', '').strip()
+        if title not in seen_titles:
+            seen_titles.add(title)
+            unique_hits.append(hit)
+
+    # 之后的代码使用 unique_hits 代替 hits
+    hits = unique_hits
+
+    # Step 8: 根据综合得分进行排序
+    # 对结果按照 weighted_scores 排序
+    sorted_results = [hit for _, hit in sorted(zip(weighted_scores, hits), key=lambda x: x[0], reverse=True)]
+
+    return sorted_results
+
+
 
 
 def save_html_snapshot(url, filename):
@@ -119,8 +211,6 @@ def save_search_history(username, query):
     # 将最新查询添加到历史记录
     history.append(query + '\n')
 
-    # 保留最多 5 条历史记录
-    history = history[-5:]
 
     # 保存历史记录，使用 UTF-8 编码
     with open(history_file, 'w', encoding='utf-8') as f:
@@ -186,9 +276,52 @@ def register():
     return render_template('register.html')  # 显示注册页面
 
 
+def get_personalized_recommendations(username, query, search_results):
+    """获取个性化推荐，基于用户历史查询，并去除已显示的搜索结果"""
+    user_history = get_search_history(username)  # 获取用户历史查询
+
+    # 将当前查询与历史查询记录结合起来，作为新的查询
+    combined_query = query + ' ' + ' '.join(user_history)  # 合并当前查询与历史查询
+
+    # 在 Elasticsearch 中进行搜索，获取推荐内容
+    query_body = {
+        "query": {
+            "multi_match": {
+                "query": combined_query,
+                "fields": [
+                    "title^3",  # 给标题更高的权重
+                    "description^2",  # 给描述适中的权重
+                    "anchor_texts^2",  # 给 anchor_texts 权重
+                    "url^1"  # 给 URL 加上权重
+                ]
+            }
+        }
+    }
+
+    # 执行查询
+    response = es.search(index=index_name, body=query_body)
+    hits = response['hits']['hits']
+
+    # 将搜索结果的 URLs 提取出来，便于后续去重
+    search_result_urls = {hit['_source'].get('url', '') for hit in search_results}
+
+    # 过滤掉已经出现在搜索结果中的推荐项
+    recommended_results = []
+    for hit in hits[:5]:  # 取前 5 个相关结果
+        url = hit['_source'].get('url', '')
+        if url not in search_result_urls:  # 如果推荐的 URL 不在搜索结果中
+            recommended_results.append({
+                'title': hit['_source'].get('title', ''),
+                'url': url,
+                'description': hit['_source'].get('description', ''),
+            })
+
+    return recommended_results
+
+
 @app.route('/search', methods=['GET', 'POST'])
 def search_page():
-    """搜索页面，显示检索结果"""
+    """搜索页面，显示检索结果和个性化推荐"""
     if 'username' not in session:
         return redirect(url_for('login'))  # 如果用户未登录，跳转到登录页面
 
@@ -198,14 +331,18 @@ def search_page():
     if request.method == 'POST':
         query = request.form['query']
         use_wildcard = 'wildcard' in request.form  # 检查是否勾选了通配符查询
-        results = search(query, use_wildcard)  # 调用搜索函数进行检索
+        search_results = search(query, username=username, use_wildcard=use_wildcard)  # 调用搜索函数进行检索
 
         # 保存查询历史
         save_search_history(username, query)
 
-        return render_template('result.html', query=query, results=results, recent_searches=recent_searches)
+        # 获取个性化推荐，基于用户历史查询和当前查询，排除搜索结果中已显示的内容
+        recommended_results = get_personalized_recommendations(username, query, search_results)
+
+        return render_template('result.html', query=query, results=search_results, recent_searches=recent_searches, recommended_results=recommended_results)
 
     return render_template('search.html', recent_searches=recent_searches)  # 显示搜索框并展示查询历史
+
 
 
 @app.route('/snapshot', methods=['GET', 'POST'])

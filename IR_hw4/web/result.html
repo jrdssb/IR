@@ -7,17 +7,44 @@
 </head>
 <body>
     <h1>Search Results for "{{ query }}"</h1>
-    <ul>
-        {% for result in results %}
-            <li>
-                <strong>URL:</strong> <a href="{{ result._source.url }}" target="_blank">{{ result._source.url }}</a><br>
-                <strong>Title:</strong> {{ result._source.title }}<br>
-                <strong>Anchor Texts:</strong> {{ result._source.anchor_texts|join(", ") }}<br>
-                <strong>PageRank:</strong> {{ result._source.pagerank }}<br><br>
-                <a href="{{ url_for('snapshot') }}">Save a Snapshot of this Page</a><br><br>
-            </li>
-        {% endfor %}
-    </ul>
+
+    <h2>Search Results</h2>
+    {% if results %}
+        <ul>
+            {% for result in results %}
+                <li>
+                    <strong>URL:</strong> <a href="{{ result._source.url }}" target="_blank">{{ result._source.url }}</a><br>
+                    <strong>Title:</strong> {{ result._source.title }}<br>
+                    {% if result._source.description %}
+                        <strong>Description:</strong> {{ result._source.description }}<br>
+                    {% endif %}
+                    {% if result._source.anchor_texts %}
+                        <strong>Anchor Texts:</strong> {{ result._source.anchor_texts|join(", ") }}<br>
+                    {% endif %}
+                    <a href="{{ url_for('snapshot') }}">Save a Snapshot of this Page</a><br><br>
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No results found.</p>
+    {% endif %}
+
+    <h2>Personalized Recommendations</h2>
+    {% if recommended_results %}
+        <ul>
+            {% for recommendation in recommended_results %}
+                <li>
+                    <strong>Title:</strong> <a href="{{ recommendation.url }}" target="_blank">{{ recommendation.title }}</a><br>
+                    {% if recommendation.description %}
+                        <strong>Description:</strong> {{ recommendation.description }}<br>
+                    {% endif %}
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No personalized recommendations available.</p>
+    {% endif %}
+
     <a href="{{ url_for('search_page') }}">Back to Search</a>
 </body>
 </html>

@@ -7,7 +7,7 @@ import re
 es = Elasticsearch([{'host': 'localhost', 'port': 9200, 'scheme': 'http'}])
 
 # 为 URL 和 PageRank 创建索引（如果不存在）
-index_name = 'nankai'
+index_name = 'nankai_url'
 if not es.indices.exists(index=index_name):
     es.indices.create(
         index=index_name,
@@ -30,39 +30,39 @@ def parse_non_standard_json(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 使用正则提取每个 URL 数据块
-    blocks = re.findall(r'(https?://[\w\./:]+):\s*\{(.*?)\},?\n', content, re.DOTALL)
+    # 提取每个 URL 数据块
+    blocks = re.findall(r'(https?://[\w\./:]+):\s*\{(.*?)\}', content, re.DOTALL)
     for url, attributes_raw in blocks:
         attributes = {}
-        # 按行解析属性
+        # 分割每一行属性
         for attr in attributes_raw.split(',\n'):
-            key_value = re.match(r'^\s*(\w+):\s*(.+)$', attr.strip())
+            key_value = re.match(r'^\s*"?(.*?)"?\s*:\s*(.+)$', attr.strip())
             if key_value:
                 key = key_value.group(1).strip()
                 value = key_value.group(2).strip()
 
-                # 去掉字符串值的引号
+                # 解析值
                 if value.startswith('"') and value.endswith('"'):
-                    value = value[1:-1]
+                    value = value[1:-1]  # 去掉引号
                 elif value.startswith('[') and value.endswith(']'):
-                    value = [v.strip('"') for v in value[1:-1].split(',')]
+                    value = [v.strip('"') for v in value[1:-1].split(',')]  # 转列表
                 elif value.replace('.', '', 1).isdigit():
-                    value = float(value) if '.' in value else int(value)
-
+                    value = float(value) if '.' in value else int(value)  # 转数字
                 attributes[key] = value
 
         data[url] = attributes
     return data
 
+
 def index_data_to_elasticsearch(file_path):
-    """从非标准 JSON 文件加载数据并将其索引到 Elasticsearch"""
     data = parse_non_standard_json(file_path)
 
     for url, attributes in data.items():
-        # 限制只保存前 5 个锚文本
+        # 调试：打印解析后的 attributes
+        #print(f"Parsed data for URL {url}: {attributes}")
+
         anchor_texts = attributes.get('anchor_text', [])[:5]
 
-        # 构建文档
         doc = {
             "url": attributes.get('url', url),
             "title": attributes.get('title', 'No Title'),
@@ -71,7 +71,8 @@ def index_data_to_elasticsearch(file_path):
             "pagerank": attributes.get('page_rank', 0.0)
         }
 
-        # 将文档索引到 Elasticsearch
+        #print(f"Document to index: {doc}")  # 调试：打印构建的文档
+
         try:
             es.index(index=index_name, document=doc)
             print(f"Indexed: {doc['url']}")
