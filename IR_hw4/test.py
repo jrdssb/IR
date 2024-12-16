@@ -1,7 +1,7 @@
 import requests
 
 # 要访问的 URL
-url = "https://sky.nankai.edu.cn/32313/list.htm"
+url = "https://medical.nankai.edu.cn/_upload/article/files/86/78/264952e546d38b2f103d0abd5663/27a42648-5e36-4ca9-80df-f3bf4112a5f0.doc"
 
 # 发送 GET 请求
 response = requests.get(url)

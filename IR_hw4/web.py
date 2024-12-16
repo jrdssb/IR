@@ -69,7 +69,7 @@ def clean_url(url):
 
 
 # Elasticsearch 索引名称
-index_name = 'nankai_url'
+index_name = 'nankai_url_final'
 
 
 def search(query, username=None, use_wildcard=False):

@@ -5,7 +5,7 @@ import re
 es = Elasticsearch([{'host': 'localhost', 'port': 9200, 'scheme': 'http'}])
 
 # 为 URL 和 PageRank 创建索引（如果不存在）
-index_name = 'nankai_url'
+index_name = 'nankai_url_final'
 
 def verify_index(index_name):
     """验证索引中的文档数量"""
